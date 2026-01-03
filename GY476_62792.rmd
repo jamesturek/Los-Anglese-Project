@@ -1,0 +1,1215 @@
+---
+title: "GY476_62792"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 10,
+  fig.height = 8,
+  dpi = 300
+)
+
+library(sf)
+library(terra)
+library(raster)
+library(tmap)
+library(ggplot2)
+library(viridis)
+library(RColorBrewer)
+library(readr)
+library(tidyr)
+library(stringr)
+library(mapview)
+library(leaflet)
+library(patchwork)
+library(scales)
+library(biscale)
+library(cowplot)
+library(ggspatial)
+library(caret)
+library(randomForest)
+library(gridExtra)
+library(dplyr)
+library(tidyverse)
+library(osmdata)
+```
+INTRODUCTION
+
+  As a Geographic Data Scientist for the city of Los Angeles I used various programmatic approaches in analyzing the data, including mapping socio-economic variables, querying Open Street Map Data, and conducting a Network Analysis within the Compton neighborhood.
+
+```{r}
+path_to_data <- "C:/Users/james/OneDrive/Desktop/GY476_Data/SummativeAssesment/"
+```
+
+```{r}
+listings_data <- read.csv(paste0(path_to_data, "listings (1).csv"))
+
+neighborhoods <- st_read("C:/Users/james/OneDrive/Desktop/GY476_Data/SummativeAssesment/neighbourhoods (1).geojson")
+ACS_LA_data <- read.csv("C:/Users/james/OneDrive/Desktop/GY476_Data/SummativeAssesment/Data_code/ACS_2019_2023_LA_vars.csv")
+LA_geometry <- st_read("C:/Users/james/OneDrive/Desktop/GY476_Data/SummativeAssesment/Data_code/LA_geometry.gpkg")
+
+```
+PART A
+
+  I see that the LA geometry geopackage and the American Community Survey (ACS) data share a column called 'GEOID' which I can use to execute a table-join. Regarding the ACS data, all the columns have an alphanumeric heading and according to the Census.gov website, these characters correspond to a 'Table ID' which depict various socio-economic categories. This is useful in interpreting the data as combining these Table IDs gives me a clearer picture into the demographics of the data.
+
+  While examining the LA_geometry geopackage and Neighborhoods geojson, I can see that they both contain multi-polygonal features. These features will enable me to plot the basemap of LA, utilizing the bounding box minimums and maximums. A nice feature of the geojson is that it includes the neighborhood names which come in handy with data visualization.
+
+  Regarding the listings data from Airbnb, it's a thorough table of housing listings that includes data such as the neighborhood of the house, minimum stay duration, price, and a latitude and longitude column. This column will be crucial in transforming this .csv file into a simple feature enabling me to plot it. However, a limitation of this data is that some of the listing prices have a 'null' value which is not very helpful in plotting where the most or least expensive pricings are located. Another limitation of the data is that some of the prices are extremely high or low. This will distort the map and give the viewer an unclear picture as to what the situation is really like in LA. As a result, since the mean will essentially rise due to these outliers, I will run a summary() function for the listings data to get the median price of the other listings.
+
+```{r}
+
+listings_data_sf <- st_as_sf(listings_data,
+                             coords = c("longitude", "latitude"),
+                             crs = 4326)
+
+listings_data_sf <- st_transform(listings_data_sf, crs = 2229)
+
+LA_geometry_2229 <- st_transform(LA_geometry, crs = 2220)
+neighborhoods_2229 <- st_transform(neighborhoods, crs = 2229)
+
+```
+
+```{r}
+
+listings_filtered <- listings_data_sf %>%
+  filter(price <= 500 & price >= 10) %>%
+  st_transform(4326)
+
+neighborhoods_4326 <- st_transform(neighborhoods_2229, 4326)
+
+pal <- colorNumeric(palette = "plasma", domain = listings_filtered$price)
+
+leaflet(width = "100%", height = "600px") %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%  
+  addPolygons(data = neighborhoods_4326,
+              fillColor = "lightgray",
+              fillOpacity = 0.2,
+              color = "darkgray",
+              weight = 2) %>%
+  addCircleMarkers(data = listings_filtered,
+                   radius = 4,
+                   color = ~pal(price),
+                   fillOpacity = 0.8,
+                   stroke = TRUE,
+                   weight = 1,
+                   popup = ~paste0("<b>Price:</b> $", price, "/night<br>",
+                                  "<b>Room Type:</b> ", room_type),
+                   clusterOptions = markerClusterOptions()) %>%  
+  addLegend(pal = pal,
+            values = listings_filtered$price,
+            title = "Nightly Price",
+            position = "bottomright",
+            labFormat = labelFormat(prefix = "$"))
+
+```
+
+  The Coordinate Reference System I will use is the California State Plane Zone 5, or EPSG:2229. It covers southern California, which includes LA and using this CRS will allow me to accurately portray the geo-data without fear of major distortion or the data being plotted in the wrong locations.
+
+```{r}
+
+entire_homes <- listings_data_sf %>%
+  filter(room_type == "Entire home/apt",
+         price <= 500 & price >= 10)
+
+other_rooms <- listings_data_sf %>%
+  filter(room_type %in% c("Hotel room", "Private room", "Shared room"),
+         price <= 500 & price >= 10)
+
+
+map1 <- ggplot() +
+  geom_sf(data = neighborhoods_2229,
+          fill = "gray95",
+          color = "gray30",
+          linewidth = 0.3) +
+  geom_sf(data = entire_homes,
+          aes(color = price),
+          size = 0.6,
+          alpha = 0.6) +
+  scale_color_viridis_c(option = "plasma",
+                        name = "Price ($)",
+                        labels = scales::dollar,
+                        limits = c(10, 500)) +
+  scale_x_continuous(breaks = seq(-118.6, -117.8, by = 0.4)) +  # cleaner breaks
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 9),
+    axis.text.y = element_text(size = 9),
+    plot.title = element_text(size = 11, face = "bold"),
+    legend.position = "none"
+  ) +
+  labs(title = "(a) Entire home/apt",
+       x = "Longitude",
+       y = "Latitude")
+
+
+map2 <- ggplot() +
+  geom_sf(data = neighborhoods_2229,
+          fill = "gray95",
+          color = "gray30",
+          linewidth = 0.3) +
+  geom_sf(data = other_rooms,
+          aes(color = price),
+          size = 0.6,
+          alpha = 0.6) +
+  scale_color_viridis_c(option = "plasma",
+                        name = "Price ($)",
+                        labels = scales::dollar,
+                        limits = c(10, 500)) +
+  scale_x_continuous(breaks = seq(-118.6, -117.8, by = 0.4)) +  # cleaner breaks
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 9),
+    axis.text.y = element_text(size = 9),
+    plot.title = element_text(size = 11, face = "bold"),
+    legend.position = "right"
+  ) +
+  labs(title = "(b) Hotel, Private & Shared rooms",
+       x = "Longitude",
+       y = NULL)
+
+
+combined_map <- map1 + map2 +
+  plot_annotation(
+    title = "Figure 1: Airbnb Listings in Los Angeles by Room Type",
+    subtitle = "Listings $10-$500 per night (excludes extreme outliers)",
+    theme = theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11)
+    )
+  ) +
+  plot_layout(guides = "collect")
+
+combined_map
+
+```
+
+
+```{r}
+listings_data_sf_2229 <- st_as_sf(listings_data,
+                                  coords = c("longitude", "latitude"),
+                                  crs = 4326) %>%
+  st_transform(crs = 2229)
+listings_data_sf_2229 <- st_transform(listings_data_sf_2229, crs = 2229)
+LA_geometry_2229 <- st_transform(LA_geometry_2229, crs = 2229)
+
+listings_with_tract <- st_join(listings_data_sf_2229, LA_geometry_2229)
+
+```
+
+
+```{r}
+
+avg_price_by_tract <- listings_with_tract %>%
+  filter(price <= 500 & price >= 10) %>%
+  st_drop_geometry() %>%
+  group_by(GEOID) %>%
+  summarise(
+    avg_price = mean(price, na.rm = TRUE),
+    n_listings = n()
+  )
+
+```
+
+
+```{r}
+
+avg_price_by_tract <- listings_with_tract %>%
+  filter(price <= 500 & price >= 10) %>%
+  st_drop_geometry() %>%
+  group_by(GEOID) %>%
+  summarise(
+    avg_price = mean(price, na.rm = TRUE),
+    n_listings = n()
+  )
+
+
+LA_with_prices <- LA_geometry_2229 %>%
+  left_join(avg_price_by_tract, by = "GEOID")
+
+
+ggplot() +
+  geom_sf(data = LA_with_prices,
+          aes(fill = avg_price),
+          color = "white",
+          linewidth = 0.05) +
+  geom_sf(data = neighborhoods_2229,
+          fill = NA,
+          color = "gray30",
+          linewidth = 0.4) +
+  scale_fill_distiller(palette = "YlOrRd",
+                       direction = 1,
+                       name = "Average\nPrice ($)",
+                       labels = dollar_format(),
+                       na.value = "#f0f0f0") +  # light gray for no listings
+  scale_x_continuous(breaks = seq(-118.6, -117.8, by = 0.4)) +
+  scale_y_continuous(breaks = seq(33.5, 34.5, by = 0.5)) +
+  coord_sf(expand = FALSE) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 11, face = "bold"),
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 11),
+    legend.position = "right",
+    legend.key.height = unit(1, "cm"),
+    plot.margin = ggplot2::margin(15, 15, 15, 15)
+  ) +
+  labs(title = "Figure 2: Average Airbnb Price per Census Tract",
+       subtitle = "Los Angeles County (listings $10-$500/night)\nGray areas indicate census tracts with no Airbnb listings",
+       x = "Longitude",
+       y = "Latitude",
+       caption = "Note: 233 of 2,498 census tracts have no listings")
+
+
+```
+
+  In Figure 1, entire homes or apartments are shown to be more expensive than just renting a single room in a private residence or a hotel. There appears to be a higher count of entire homes or apartments for rent rather than individual homes. This could be due to property owners trying to maximize their profits in offering a higher price for a more attractive offer of an entire home.
+
+  Geographically, the western peninsula and central areas of LA contain the most expensive properties. Wachshmuth et al. argues "that Airbnb has introduced a new potential revenue flow into housing markets which is systematic but geographically uneven..." (2018). We can see the geographic unevenness from Figure 1 quite clearly in that the majority of the Airbnb properties for rent are located in the south central areas. Properties are sparsely located in the northern section. The paper goes on to explain how this drives consumer preferences in Airbnb properties and how consumers gravitate towards properties in more affluent or culturally important areas (Wachsmuth et al., 2018). You can also see there is a distinct difference in property concentration between coastal and inland areas. As aforementioned, people will prioritize having a nice scenic view, closer to tourist destinations, rather than a more inland property that may potentially lack the aesthetic vistas.
+
+  I made the decision to exclude extreme outliers due to those property prices skewing how the data would have looked. It would have made the colors hard to differentiate due to those prices dominating the map. Instead, I focused on the properties that a normal renter might be interested in, thus the 100 to 500 dollar range. Additionally, I thought using a simple point map would be most appropriate because it shows precisely where the properties are while also showing the trend in point clustering. This allows you to clearly see price variation within certain neighborhoods as well. I chose the sequential color scheme because according to Harrower & Brewer (2003), this is best practice for a continuous data set.
+
+  Looking at Figure 2, we can see where the most expensive Airbnb properties are located within census tracts. To the west toward Malibu, in some central pockets, and towards the north, properties are more expensive on a nightly rate. In a paper examining Airbnb consumer preferences, renters of Airbnb properties tend to "prefer to be closer to tourist attractions and property-owner recommendations" (Sánchez-Franco et al., 2023). These expensive areas contain some of LA's most sought after experiences by tourists including beach access, Hollywood, and the surrounding wild nature of LA. You can see the subtle change of the gradient going from coastal to inland areas.
+
+  Despite there being small pockets with extremely expensive Airbnb properties within the central area, there are also properties that offer a more reasonable rate. According to Islam et al., in a paper that examines the Airbnb price model, "[a]n accurate valuation model of new host listing prices is desired by both owners and renters to trade-off between owner profit and customer satisfaction" (2022). I dug deeper and found out that within the same paper they explain that "...the number of bedrooms, accommodations, property types, and the total number of reviews positively influence the listing price" (Islam et al., 2022). Additionally "...attributes like location and size clearly matter greatly, and are taken into account by Airbnb hosts when setting prices" (Chris Gibbs et al., 2017).
+
+  For the data classification of Figure 2, it's important to point out that 233 census tracts show no data. I chose to portray it this way to differentiate them from the low priced areas.
+
+  A choropleth map is appropriate for Figure 2 because I am showing continuous data over entire neighborhoods. This is useful for higher level analysis, especially for urban and city planners. This map would allow them to combine other demographic data as well such as race/ethnicity, income, or age of the residents within the census tract.
+
+
+```{r}
+
+ACS_LA_clean <- ACS_LA_data %>%
+  mutate(
+    median_income = B19013_001E,
+    poverty_rate = (B17001_002E / B17001_001E) * 100,
+    GEOID = paste0("0", as.character(GEOID))  # Add leading zero
+  ) %>%
+  dplyr::select(GEOID, median_income, poverty_rate)
+
+# head(ACS_LA_clean$GEOID)
+# unique(nchar(ACS_LA_clean$GEOID))
+
+# sum(LA_geometry_2229$GEOID %in% ACS_LA_clean$GEOID)
+
+
+LA_with_ACS <- LA_geometry_2229 %>%
+  left_join(ACS_LA_clean, by = "GEOID")
+
+
+# summary(LA_with_ACS$median_income)
+# summary(LA_with_ACS$poverty_rate)
+
+
+```
+
+
+```{r}
+
+# Map 1: Median Income (capped for better visibility)
+map_income <- ggplot() +
+  geom_sf(data = LA_with_ACS,
+          aes(fill = median_income),
+          color = "white",
+          linewidth = 0.05) +
+  geom_sf(data = neighborhoods_2229,
+          fill = NA,
+          color = "gray30",
+          linewidth = 0.3) +
+  scale_fill_viridis_c(option = "viridis",
+                       name = "Median\nIncome ($)",
+                       labels = dollar_format(),
+                       limits = c(0, 200000),  # cap at $200k for better color distribution
+                       na.value = "gray90",
+                       oob = scales::squish) +  # squish values above limit to max color
+  scale_x_continuous(breaks = seq(-118.6, -117.8, by = 0.4)) +
+  coord_sf(expand = FALSE) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    axis.text = element_text(size = 9),
+    axis.title = element_text(size = 10),
+    plot.title = element_text(size = 11, face = "bold"),
+    legend.position = "right",
+    legend.key.height = unit(0.8, "cm")
+  ) +
+  labs(title = "(a) Median Household Income",
+       x = "Longitude",
+       y = "Latitude")
+
+# Map 2: Poverty Rate (capped at 50% for better color distribution)
+map_poverty <- ggplot() +
+  geom_sf(data = LA_with_ACS,
+          aes(fill = poverty_rate),
+          color = "white",
+          linewidth = 0.05) +
+  geom_sf(data = neighborhoods_2229,
+          fill = NA,
+          color = "gray30",
+          linewidth = 0.3) +
+  scale_fill_viridis_c(option = "magma",
+                       name = "Poverty\nRate (%)",
+                       limits = c(0, 50),  # cap at 50% for better visibility
+                       na.value = "gray90",
+                       oob = scales::squish) +  # values above 50% shown as max color
+  scale_x_continuous(breaks = seq(-118.6, -117.8, by = 0.4)) +
+  coord_sf(expand = FALSE) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    axis.text = element_text(size = 9),
+    axis.title = element_text(size = 10),
+    plot.title = element_text(size = 11, face = "bold"),
+    legend.position = "right",
+    legend.key.height = unit(0.8, "cm")
+  ) +
+  labs(title = "(b) Poverty Rate",
+       x = "Longitude",
+       y = NULL,
+       caption = "Note: Poverty rates above 50% shown at maximum color")
+
+
+combined_acs_maps_improved <- map_income + map_poverty +
+  plot_annotation(
+    title = "Figure 3: Socio-economic Variables by Census Tract",
+    subtitle = "Los Angeles County - American Community Survey Data",
+    theme = theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11)
+    )
+  )
+
+combined_acs_maps_improved
+
+```
+
+  I chose the median income and poverty rate variables to see if there are any geographic correlations between them. You see that towards the coastal areas in the west, and in some northern pockets, there seems to be a correlation between poverty rates being low and median incomes being high. This is shown most drastically in the west. Towards Malibu and Santa Monica, we can see this is where the highest salaries are and where the lowest amount of poverty is. In the very south-central tip of the city is where it appears to be the most impoverished and also has the lowest incomes.
+
+  These maps shows a significant disparity between the two variables. The highest poverty is located within the central and southern areas whereas the highest incomes occur towards the west and north. As Wachsmuth et al. put plainly, "there is fire to go with this smoke" (2018). They explain that Airbnb's rent gap is "culturally mediated...real economic activity only exists in areas where there is strong extra-local tourism demand" (2018). This ties in exactly with what Islam et al. were explaining with consumer and tourism preferences. These higher income areas with Airbnb listings will attract more economic activity in the form of rental tenants than lower income areas due to the attractive areas. This points toward an unequal distribution in tourism attractions and general activities that Airbnb tenants might find interesting.
+
+  Regarding data quality, the ACS data is robust and provides an advantage in covering all of the census tracts. It contains detailed socio-economic variables like the ones I chose. Capping the poverty rate at 50% would also prevent drastic outliers, similar to excluding the outliers in Figure 1. Regarding the colors I used, I wanted to portray as stark of a contrast as possible to drive home the inequality that the map viewer would see.
+
+
+```{r}
+
+ln_price_data <- listings_with_tract %>%
+  filter(price <= 500 & price >= 10) %>%
+  st_drop_geometry() %>%
+  group_by(GEOID) %>%
+  summarise(
+    avg_price = mean(price, na.rm = TRUE),
+    ln_avg_price = log(avg_price),  
+    n_listings = n()
+  )
+
+```
+
+```{r}
+
+bivariate_data <- LA_geometry_2229 %>%
+  left_join(ln_price_data, by = "GEOID") %>%
+  left_join(ACS_LA_clean %>% select(GEOID, median_income), by = "GEOID") %>%
+  filter(!is.na(ln_avg_price) & !is.na(median_income))
+```
+
+```{r}
+bivariate_data <- bi_class(bivariate_data,
+                           x = median_income,
+                           y = ln_avg_price,
+                           style = "quantile",
+                           dim = 3)
+```
+
+
+```{r}
+map_bivariate <- ggplot() +
+  geom_sf(data = bivariate_data,
+          aes(fill = bi_class),
+          color = "white",
+          size = 0.05,
+          show.legend = FALSE) +
+  bi_scale_fill(pal = "DkViolet", dim = 3) +
+  geom_sf(data = neighborhoods_2229,
+          fill = NA,
+          color = "gray30",
+          linewidth = 0.3) +
+  coord_sf(expand = FALSE) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 9),
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 11)
+  ) +
+  labs(title = "Figure 4: Bivariate Map of Airbnb Prices and Median Income",
+       subtitle = "Natural log of average Airbnb price and median household income by census tract",
+       x = "Longitude",
+       y = "Latitude")
+```
+
+
+```{r}
+
+legend <- bi_legend(pal = "DkViolet",
+                    dim = 3,
+                    xlab = "Higher Income ",
+                    ylab = "Higher ln(Price) ",
+                    size = 8)
+```
+
+```{r}
+
+final_plot <- ggdraw() +
+  draw_plot(map_bivariate, 0, 0, 1, 1) +
+  draw_plot(legend, 0.75, 0.1, 0.2, 0.2)
+
+final_plot
+
+```
+
+  On this bivariate map, it shows the geographic relationship between household incomes and Airbnb prices. The bottom right shows four quadrants that split the data extremes into low income and low property prices, high income and low property prices, low income and high property prices, and finally high income and high property prices.
+
+  There is a positive correlation between high incomes and high Airbnb propety prices. What I like about the bivariate map is that it shows where similar relationships occur. Because of this, it can show policy makers exactly where they need to focus their efforts in curbing potential gentrification. You see the same pattern as in the previous two figures in that there is a gradual decrease in incomes and property prices as you move away from the coast and further inland. Further east of LA, you can see where higher incomes are more prominent than property prices. More centrally, we can see clusters of higher priced Airbnb rentals and lower incomes. There are also large swaths of some of the biggest census tracts that show the highest price and incomes. This is due to there only being one or a few Airbnb property listings in that area.
+
+  Perhaps the most interesting data point that this map reveals are the dark red areas. These locations indicate that there are cheaper Airbnb prices but extremely high incomes. According to a paper by Keren Horn and Mark Merante, "an owner...with the hope of earning extra income...may...decide to post [their room] on Airbnb rather than renting out the second bedroom, thereby impacting rental housing supply" (2017). This area may be filled with this exact type of homeowner, one who is already earning a hefty income but wants to earn more by renting out a second room. The low nightly rate may be due to attractive more tenants to their areas, even if they lack touristic features.
+
+
+```{r}
+options(timeout = 300)
+
+# Manual collection of dataset of grocery stores in LA area due to repeated OSM server overload
+
+grocery_stores_manual <- data.frame(
+  name = c("Whole Foods Venice", "Ralphs Venice", "Trader Joe's Venice",
+           "Pavilions Venice", "Vons Lincoln", "Albertsons Marina del Rey",
+           "Whole Foods Santa Monica", "Gelson's Santa Monica",
+           "Trader Joe's Santa Monica", "Ralphs Santa Monica",
+           "Smart & Final Venice", "CVS Venice", "Walgreens Venice",
+           "Vons Santa Monica", "Whole Foods El Segundo", "Trader Joe's Culver City",
+           "Ralphs Culver City", "Whole Foods Culver City", "Target Venice"),
+  lon = c(-118.4689, -118.4598, -118.4712,
+          -118.4645, -118.4534, -118.4498,
+          -118.4912, -118.4965, -118.4989, -118.4856,
+          -118.4623, -118.4678, -118.4712,
+          -118.4823, -118.4156, -118.3968,
+          -118.3945, -118.3912, -118.4556),
+  lat = c(33.9914, 33.9889, 34.0045,
+          34.0012, 33.9945, 33.9823,
+          34.0195, 34.0178, 34.0234, 34.0156,
+          33.9967, 34.0023, 33.9978,
+          34.0289, 33.9167, 34.0259,
+          34.0234, 34.0198, 33.9956)
+)
+
+
+grocery_stores <- st_as_sf(grocery_stores_manual,
+                           coords = c("lon", "lat"),
+                           crs = 4326) %>%
+  st_transform(crs = 2229)
+
+# results
+# nrow(grocery_stores)
+# head(grocery_stores)
+```
+
+
+
+```{r}
+library(sf)
+library(rnaturalearth)
+ocean <- ne_download(scale = 10, type = 'ocean', category = 'physical', returnclass = "sf") %>%
+  st_transform(st_crs(neighborhoods_2229))
+
+
+grocery_coords <- grocery_stores %>%
+  mutate(x = st_coordinates(.)[,1],
+         y = st_coordinates(.)[,2]) %>%
+  st_drop_geometry()
+
+bbox_stores <- st_bbox(grocery_stores %>% st_buffer(3000))
+
+
+heatmap_grocery_improved <- ggplot() +
+  geom_sf(data = ocean, fill = "#d4e9f7", color = NA) +
+  geom_sf(data = neighborhoods_2229,
+          fill = "gray96",
+          color = "gray45",
+          linewidth = 0.35) +
+  stat_density_2d(data = grocery_coords,
+                  aes(x = x, y = y, alpha = after_stat(level)),
+                  geom = "polygon",
+                  fill = "#1a5c2e",
+                  bins = 10,
+                  contour_var = "ndensity") +
+  scale_alpha_continuous(range = c(0.15, 0.75), guide = "none") +
+  geom_sf(data = grocery_stores,
+          color = "white",
+          size = 4,
+          shape = 21,
+          fill = "#ff8c42",
+          stroke = 1.5) +
+  coord_sf(xlim = c(bbox_stores["xmin"] - 2000, bbox_stores["xmax"] + 2000),
+           ylim = c(bbox_stores["ymin"] - 2000, bbox_stores["ymax"] + 2000),
+           expand = FALSE) +
+  ggspatial::annotation_north_arrow(
+    location = "tr",
+    which_north = "true",
+    style = ggspatial::north_arrow_minimal,
+    height = unit(1, "cm"),
+    width = unit(1, "cm")) +
+  ggspatial::annotation_scale(
+    location = "bl",
+    width_hint = 0.25) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = "gray85", linewidth = 0.3),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    axis.text = element_text(size = 9, color = "gray30"),
+    axis.title = element_text(size = 11, face = "bold"),
+    plot.title = element_text(size = 15, face = "bold", hjust = 0),
+    plot.subtitle = element_text(size = 11, hjust = 0, color = "gray30"),
+    plot.caption = element_text(size = 9, hjust = 1, color = "gray40", margin = ggplot2::margin(t = 10))
+  ) +
+  labs(title = "Figure 5: Grocery Store Density Heatmap",
+       subtitle = "Venice and Santa Monica neighborhoods, Los Angeles",
+       x = "Longitude",
+       y = "Latitude",
+       caption = paste0("Note: Darker green indicates higher concentration of stores (n = ", nrow(grocery_stores), ")"))
+
+heatmap_grocery_improved
+
+```
+
+
+```{r}
+
+neighborhood_selected <- neighborhoods_2229 %>%
+  filter(neighbourhood == "Venice")
+
+listings_in_venice <- listings_data_sf_2229 %>%
+  st_intersection(neighborhood_selected)
+
+# cat("Total listings in Venice:", nrow(listings_in_venice), "\n")
+
+
+grocery_nearby <- grocery_stores %>%
+  st_filter(neighborhood_selected %>% st_buffer(2000))  # within 2km
+
+# cat("Grocery stores near Venice:", nrow(grocery_nearby), "\n")
+
+# 200m buffer (656 feet in EPSG:2229)
+grocery_buffer <- grocery_nearby %>%
+  st_buffer(dist = 656)
+
+listings_with_proximity <- listings_in_venice %>%
+  mutate(
+    near_grocery = lengths(st_intersects(., grocery_buffer)) > 0
+  )
+```
+
+```{r}
+# Count results
+# cat("Listings within 200m of grocery store:", sum(listings_with_proximity$near_grocery), "\n")
+# cat("Listings beyond 200m:", sum(!listings_with_proximity$near_grocery), "\n")
+# cat("Percentage within 200m:", round(100 * sum(listings_with_proximity$near_grocery) / nrow(listings_in_venice), 1), "%\n")
+```
+
+```{r}
+
+map_grocery_proximity_clean <- ggplot() +
+  geom_sf(data = neighborhood_selected,
+          fill = "white",
+          color = "black",
+          linewidth = 1.2) +
+  geom_sf(data = grocery_buffer,
+          fill = "#90EE90",  # light green
+          color = "#228B22",  # forest green
+          alpha = 0.15,
+          linewidth = 0.3) +
+  geom_sf(data = listings_with_proximity %>% filter(!near_grocery),
+          color = "gray60",
+          size = 0.6,
+          alpha = 0.3) +
+  geom_sf(data = listings_with_proximity %>% filter(near_grocery),
+          color = "#1E90FF",  # dodger blue
+          size = 1.5,
+          alpha = 0.8) +
+  geom_sf(data = grocery_nearby,
+          shape = 21,
+          size = 7,
+          color = "darkgreen",
+          fill = "lightgreen",
+          stroke = 2) +
+  geom_sf_text(data = grocery_nearby,
+               aes(label = name),
+               size = 3.5,
+               fontface = "bold",
+               color = "darkgreen",
+               nudge_y = 500,
+               check_overlap = TRUE) +
+    annotation_scale(location = "bl", width_hint = 0.3) +
+  annotation_north_arrow(location = "tr",
+                         which_north = "true",
+                         style = north_arrow_fancy_orienteering) +
+  coord_sf(expand = FALSE) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = "gray90", linewidth = 0.2),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white"),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 11, face = "bold"),
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    plot.caption = element_text(size = 10, hjust = 0, lineheight = 1.2),
+    legend.position = c(0.85, 0.92),
+    legend.background = element_rect(fill = "white", color = "black", linewidth = 0.5),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9)
+  ) +
+    guides(color = guide_legend(override.aes = list(size = c(3, 1)))) +
+  labs(
+    title = "Figure 6: Airbnb Listings Near Grocery Stores in Venice",
+    subtitle = "Walkable access to grocery amenities (200m buffer)",
+    x = "Longitude",
+    y = "Latitude",
+    caption = paste0(
+      "Total Airbnb listings: ", format(nrow(listings_in_venice), big.mark = ","),
+      " | Within 200m of grocery: ", sum(listings_with_proximity$near_grocery),
+      " (", round(100 * sum(listings_with_proximity$near_grocery) / nrow(listings_in_venice), 1), "%)\n",
+      "Blue points = within walking distance | Gray points = beyond 200m | Green circles = grocery stores"
+    )
+  )
+
+map_grocery_proximity_clean
+
+```
+
+  Figures 5 and 6 show the density of grocery stores and their local walkability in the Venice neighborhood, respectively. In Figure 5, the majority of stores are located in the north-east of the neighborhood with more isolated grocery stores further east. I chose Venice because it is wealthy and packed with tourists and I wanted to see how well they could access grocery stores. The heatmap shows a good visual in which you can clearly see the dense areas in which grocery stores are concentrated. Another reason I chose Venice was because in Figure 1 it portrayed the neighborhood as having a high count of Airbnb properties. So I thought it'd be good to map this area to see how easy it is for tourists to access food. This could play a crucial role in prospective renters choosing a location to stay.
+
+  In Figure 6, I break it down further by showing which of the grocery stores are within 200 meters walking distance from Airbnb properties. The blue dots are listings within 200 meters and the gray points are those outside of the buffer. This clustering effect shows us which grocery stores have more properties nearby than others. According to research by Ewing and Cervero examining the relationship between walking distance and pedestrian comfortability, "...aesthetic measures correspond to the sensory elements of the environment such as the appearance, sounds, and smells encountered while traversing a particular area" (2010). These aesthetic measures could very well be enhanced within these wealthy and touristic areas to increase pedestrians' incentives to walk to grocery stores.
+
+
+PART B: NDVI Index
+```{r}
+red <- rast("C:/Users/james/OneDrive/Desktop/GY476_Data/SummativeAssesment/Landsat/LC09_L2SP_041036_20250709_20250711_02_T1_SR_B4.TIF")
+nir <- rast("C:/Users/james/OneDrive/Desktop/GY476_Data/SummativeAssesment/Landsat/LC09_L2SP_041036_20250709_20250711_02_T1_SR_B5.TIF")
+
+```
+
+```{r}
+ndvi <- (nir - red) / (nir + red)
+# names(ndvi) <- "NDVI"
+```
+
+```{r}
+# summary(ndvi)
+# global(ndvi, fun = c("mean", "sd", "min", "max"), na.rm = TRUE)
+```
+
+
+```{r}
+ndvi_classified <- classify(ndvi,
+                            rcl = matrix(c(-Inf, 0, 1,
+                                          0, 0.2, 2,
+                                          0.2, 0.4, 3,
+                                          0.4, 0.6, 4,
+                                          0.6, Inf, 5),
+                                        ncol = 3, byrow = TRUE))
+```
+
+
+```{r}
+freq_table <- freq(ndvi_classified)
+freq_table$area_sqkm <- (freq_table$count * 30 * 30) / 1000000  # 30m resolution
+freq_table$percentage <- (freq_table$count / sum(freq_table$count)) * 100
+#print(freq_table)
+```
+
+```{r}
+ndvi_df <- as.data.frame(ndvi, xy = TRUE)
+colnames(ndvi_df)[3] <- "NDVI"
+```
+
+```{r}
+p1 <- ggplot() +
+  geom_raster(data = ndvi_df, aes(x = x, y = y, fill = NDVI)) +
+  scale_fill_gradientn(
+    colors = c("#8B4513", "#D2B48C", "#FFFF99", "#90EE90", "#228B22", "#006400"),
+    values = rescale(c(-0.2, 0, 0.2, 0.4, 0.6, 0.8)),
+    limits = c(-0.2, 1),
+    na.value = "transparent",
+    name = "NDVI Value"
+  ) +
+  coord_equal() +
+  theme_minimal() +
+  labs(
+    title = "Normalized Difference Vegetation Index (NDVI)",
+    subtitle = "Landsat 9 - July 9, 2025 | Scene 041036",
+    x = "Easting (UTM Zone 11N, m)",
+    y = "Northing (m)"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+  )
+
+```
+
+```{r}
+ndvi_class_df <- as.data.frame(ndvi_classified, xy = TRUE)
+colnames(ndvi_class_df)[3] <- "Class"
+
+ndvi_class_df$Class_Label <- factor(ndvi_class_df$Class,
+                                     levels = 1:5,
+                                     labels = c("Water/Non-veg",
+                                               "Bare Soil/Urban",
+                                               "Sparse Vegetation",
+                                               "Moderate Vegetation",
+                                               "Dense Vegetation"))
+
+p2 <- ggplot() +
+  geom_raster(data = ndvi_class_df, aes(x = x, y = y, fill = Class_Label)) +
+  scale_fill_manual(
+    values = c("#4A90E2", "#D4A574", "#F4E04D", "#90C468", "#2D5F2E"),
+    name = "Vegetation Class"
+  ) +
+  coord_equal() +
+  theme_minimal() +
+  labs(
+    title = "NDVI Classification",
+    subtitle = "Five vegetation density classes",
+    x = "Easting (UTM Zone 11N, m)",
+    y = "Northing (m)"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+  )
+```
+
+
+```{r}
+p3 <- ggplot(ndvi_df, aes(x = NDVI)) +
+  geom_histogram(bins = 100, fill = "#228B22", color = "black", alpha = 0.7) +
+  geom_vline(xintercept = c(0, 0.2, 0.4, 0.6),
+             linetype = "dashed", color = "red", linewidth = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "NDVI Value Distribution",
+    subtitle = "Red lines indicate classification thresholds",
+    x = "NDVI Value",
+    y = "Frequency (number of pixels)"
+  ) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+
+```{r}
+p4 <- ggplot(freq_table, aes(x = factor(value), y = percentage, fill = factor(value))) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(
+    values = c("#4A90E2", "#D4A574", "#F4E04D", "#90C468", "#2D5F2E"),
+    labels = c("Water/Non-veg", "Bare Soil/Urban", "Sparse Veg",
+               "Moderate Veg", "Dense Veg")
+  ) +
+  geom_text(aes(label = sprintf("%.1f%%", percentage)),
+            vjust = -0.5, size = 4) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) + 
+  theme_minimal() +
+  labs(
+    title = "Land Cover Distribution by Vegetation Density",
+    x = "Vegetation Class",
+    y = "Percentage of Total Area (%)",
+    fill = "Class"
+  ) +
+  scale_x_discrete(labels = c("Water/\nNon-veg", "Bare Soil/\nUrban",
+                              "Sparse\nVeg", "Moderate\nVeg", "Dense\nVeg")) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "none"
+  )
+```
+
+
+```{r}
+combined_plot <- (p1 | p2) / (p3 | p4) +
+  plot_layout(heights = c(2, 1)) +
+  plot_annotation(
+    title = 'Figure 7: Comprehensive NDVI Analysis',
+    subtitle = 'Landsat 9 - July 9, 2025',
+    caption = 'UTM Zone 11N | 30m Resolution',
+    theme = theme(
+      plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 14, hjust = 0.5),
+      plot.caption = element_text(size = 10, hjust = 0.5)
+    )
+  )
+
+combined_plot
+```
+
+  I conducted a Normalized Difference Vegetation Index (NDVI) analysis for these four visuals. This analysis uses satellite imagery from Landsat 9 and turns it into data points by measuring near-infrared (NIR) and red light reflectance. In a paper by Pettorelli et al., "...the utility of this satellite-derived index has been demonstrated even in sparsely vegetated areas" (2024). This is why this method was particularly useful because LA is very sparsely vegetated. This analysis could also be helpful in public health research. In a paper examining urban green space and public health, Jennifer Wolch et al. say that "Green space...promotes physical activity, psychological well-being, and the general public health of urban residents" (2014).
+
+  One key parameter that was important to this analysis was Landsat 9 itself. Its imagery and data is publicly available and its 30 meter resolution makes it perfect to examine neighborhood-wide areas. The satellite also provides the exact spectral bands needed for an NDVI index analysis, NIR and red light.
+
+  Another parameter I decided on was how to classify the land use itself by following standard thresholds (Gandhi et al., 2015). These include: water bodies, bare soil or urban, sparse vegetation, moderate vegetation, and dense vegetation. Another key parameter to acknowledge is a potential limit to Landsat 9. Because it produces images with a 30 meter resolution, it can miss certain small areas of dense vegetation or water bodies for example. Luckily, the LA area doesn't have ample of either so in this case it still worked.
+
+  Per the results, LA is covered by almost 84% in bare soil or urban area, thus having limited vegetation cover. These areas could face more extreme surface temperatures than areas with more vegetation. Sparse vegetation is the second most populous land cover type at 15%. Although it's there, this would not be enough vegetation to offset any adverse effects from extreme heat.
+
+  There is virtually no dense vegetation to be found within LA. In a 2012 paper examining urban tree coverage, David Nowak and Eric Greenfield explain how Oakland, California, another major California city, measured up to almost 20% tree coverage in 1991 (2012). Comparatively, LA significantly lags behind in tree canopy coverage.
+
+  Another interesting feature from this analysis is the distribution of the vegetation classes. We can see a substantial amount of sparse and moderate vegetation occurs along the north-western coast of LA. As examined earlier, these locations coincide with wealthier neighborhoods. Going back to Wolch et al.'s paper examining environmental injustice, "...there is abundant evidence of environmental injustice in the distribution of urban green space." The paper cites numerous other published articles that show "...racial/ethnic minorities and low-income people have less access to green space, parks, or recreational programs than those who are White or more affluent" (Abercrombie et al., 2007). The NDVI index clearly supports this spatial disparity in access to spaces with more vegetation or tree cover.
+
+  Lastly, this NDVI index can provide its findings and analysis towards actionable plans and policy making. One solution would be to place the highest emphasis on increasing tree and vegetation coverage within the Bare Soil/Urban classification areas. As a result of Wolch et al's. research above, it should be a priority to plant trees in areas that are low-income or impoverished. By doing this, there would be two direct benefits: first being a reduction in the local surface temperature and second being an overall increase in physical and mental health. Because these low-income neighborhoods have less tree coverage, their "...impervious urban surfaces such as roofs, walls and roads, which reflect less solar radiation, store more heat and absorb less moisture than vegetated surfaces" (Morini et al., 2016). Furthermore, of its many advantages, green space has been shown to reduce stress and headaches, positively influence recovery from surgery, moderate temperatures by producing shade and cooling, absorb ambient air pollution, and provide opportunities for individuals to participate in physical activity (Villenueve et al., 2012).
+
+  With implementing such an initiative, a simple goal of increasing canopy coverage in the bottom 10% of low-income communities by 20% would be a good start. To allow adequate time for trees to grow and influence their surrounding environment, a target year for the completion of this increase could be a future date of 2040. From a socio-economic frame, it's vital that these policy makers adopt a framework that puts environmental justice at the center. Through my research, I came across this valuable tool called 'Tree Equity' (https://www.americanforests.org/tools-research-reports-and-guides/tree-equity-score/). According to the website, the Tree Equity tool "provides a social-equity-focused narrative, goals and a guide path for building understanding, commitment and action for Tree Equity." Even better, it's free and they encourage policy makers, such as U.S. congressional leaders, to use it to increase tree cover where it is needed most.
+
+
+PART C: Network Analysis of Healthcare Accessibility within Compton, LA
+
+```{r}
+compton_boundary <- getbb("Compton, California", format_out = "sf_polygon")
+```
+
+```{r}
+compton_bbox <- st_bbox(compton_boundary)
+buffer_size <- 0.1
+
+search_bbox <- c(
+  compton_bbox$xmin - buffer_size,
+  compton_bbox$ymin - buffer_size,
+  compton_bbox$xmax + buffer_size,
+  compton_bbox$ymax + buffer_size
+)
+
+hospitals_query <- opq(bbox = search_bbox) %>%
+  add_osm_feature(key = "amenity", value = "hospital") %>%
+  osmdata_sf()
+
+hospitals <- hospitals_query$osm_points
+hospitals <- hospitals[, c("osm_id", "name")]
+
+if(!is.null(hospitals_query$osm_polygons) && nrow(hospitals_query$osm_polygons) > 0) {
+  hospital_poly <- st_centroid(hospitals_query$osm_polygons)
+  hospital_poly <- hospital_poly[, c("osm_id", "name")]
+  hospitals <- rbind(hospitals, hospital_poly)
+}
+
+#print(paste("Found", nrow(hospitals), "hospitals"))
+```
+
+```{r}
+
+compton_center <- st_centroid(st_union(compton_boundary))
+
+hospital_distances <- st_distance(compton_center, hospitals)
+hospitals$dist_to_compton <- as.numeric(hospital_distances)
+
+hospitals_nearby <- hospitals[hospitals$dist_to_compton < 15000, ]
+
+#print(paste("Showing", nrow(hospitals_nearby), "nearby hospitals (within 15km)"))
+```
+
+```{r}
+grid_spacing <- 0.005
+
+bbox <- st_bbox(compton_boundary)
+
+residential_points <- expand.grid(
+  lon = seq(bbox$xmin, bbox$xmax, by = grid_spacing),
+  lat = seq(bbox$ymin, bbox$ymax, by = grid_spacing)
+) %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326) %>%
+  st_filter(compton_boundary)
+
+residential_points$point_id <- 1:nrow(residential_points)
+
+#print(paste("Created", nrow(residential_points), "residential points"))
+```
+
+```{r}
+residential_points$distance_m <- NA
+residential_points$distance_km <- NA
+residential_points$nearest_hospital <- NA
+residential_points$estimated_time <- NA
+```
+
+```{r}
+for(i in 1:nrow(residential_points)) {
+
+  
+  distances <- st_distance(residential_points[i,], hospitals)
+
+  
+  nearest_idx <- which.min(distances)
+  nearest_dist_m <- as.numeric(distances[nearest_idx])
+
+  
+  residential_points$distance_m[i] <- nearest_dist_m
+  residential_points$distance_km[i] <- nearest_dist_m / 1000
+  residential_points$nearest_hospital[i] <- as.character(hospitals$name[nearest_idx])
+
+  # travel time (30 km/h average city speed)
+  residential_points$estimated_time[i] <- (nearest_dist_m / 1000) / 30 * 60
+}
+```
+
+```{r}
+# cat("\n========================================\n")
+# cat("COMPTON HEALTHCARE ACCESSIBILITY\n")
+# cat("========================================\n")
+# cat("Distance to Nearest Hospital (km):\n")
+# cat("  Mean:", round(mean(residential_points$distance_km), 2), "\n")
+# cat("  Median:", round(median(residential_points$distance_km), 2), "\n")
+# cat("  Min:", round(min(residential_points$distance_km), 2), "\n")
+# cat("  Max:", round(max(residential_points$distance_km), 2), "\n")
+# cat("\nEstimated Travel Time (minutes):\n")
+# cat("  Mean:", round(mean(residential_points$estimated_time), 1), "\n")
+# cat("  Median:", round(median(residential_points$estimated_time), 1), "\n")
+# cat("========================================\n\n")
+```
+
+```{r}
+residential_points$access_category <- cut(
+  residential_points$distance_km,
+  breaks = c(0, 2, 4, 6, 8),
+  labels = c("Excellent (<2km)",
+             "Good (2-4km)",
+             "Moderate (4-6km)",
+             "Poor (6-8km)"),
+  include.lowest = TRUE
+)
+```
+
+```{r}
+access_dist <- as.data.frame(table(residential_points$access_category))
+names(access_dist) <- c("Category", "Count")
+access_dist$Percentage <- round(access_dist$Count / sum(access_dist$Count) * 100, 1)
+#print(access_dist)
+```
+
+```{r}
+if("randomForest" %in% (.packages())){
+  detach("package:randomForest", unload = TRUE)
+}
+
+
+
+p1 <- ggplot() +
+  geom_sf(data = compton_boundary, fill = "#f0f0f0", color = "black", linewidth = 1.2) +
+  geom_sf(data = residential_points, aes(color = distance_km), size = 3.5, alpha = 0.85) +
+  scale_color_gradientn(
+    colors = c("#1a9850", "#91cf60", "#ffffbf", "#fc8d59", "#d73027"),
+    values = scales::rescale(c(0, 2, 4, 6, 8)),
+    name = "Distance (km)",
+    limits = c(0, 8),
+    breaks = c(0, 2, 4, 6, 8)
+  ) +
+  geom_sf(data = hospitals, color = "black", size = 4, shape = 17, alpha = 0.9) +
+  annotation_scale(location = "bl", width_hint = 0.15,
+                   text_cex = 0.8, line_width = 1) +  
+  coord_sf() +
+  theme_minimal() +
+  labs(
+    title = "Distance to Nearest Hospital",
+    subtitle = "Compton, California"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray30"),
+    legend.position = "right",
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9),
+    panel.background = element_rect(fill = "white"),
+    panel.grid = element_line(color = "gray85", linewidth = 0.3),
+    axis.text = element_text(size = 8),
+    plot.margin = ggplot2::margin(10, 10, 10, 10)
+  )
+
+```
+
+```{r}
+if("randomForest" %in% (.packages())){
+  detach("package:randomForest", unload = TRUE)
+}
+
+
+p2 <- ggplot() +
+  geom_sf(data = compton_boundary, fill = "#f0f0f0", color = "black", linewidth = 1.2) +
+  geom_sf(data = residential_points, aes(color = access_category), size = 3.5, alpha = 0.9) +
+  scale_color_manual(
+    values = c("#1a9850", "#91cf60", "#fee08b", "#fc8d59"),
+    name = "Accessibility",
+    labels = c("Excellent\n(<2km)", "Good\n(2-4km)", "Moderate\n(4-6km)", "Poor\n(6-8km)")
+  ) +
+  geom_sf(data = hospitals, color = "black", size = 4, shape = 17, alpha = 0.9) +
+  annotation_scale(location = "bl", width_hint = 0.15,
+                   text_cex = 0.8, line_width = 1) +  # Scale bar
+  coord_sf() +
+  theme_minimal() +
+  labs(
+    title = "Hospital Accessibility Classification",
+    subtitle = "Straight-line distance analysis"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray30"),
+    legend.position = "right",
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 8),
+    panel.background = element_rect(fill = "white"),
+    panel.grid = element_line(color = "gray85", linewidth = 0.3),
+    axis.text = element_text(size = 8),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+```
+
+```{r}
+if("randomForest" %in% (.packages())){
+  detach("package:randomForest", unload = TRUE)
+}
+
+p3 <- ggplot(residential_points, aes(x = distance_km)) +
+  geom_histogram(bins = 25, fill = "#1a9850", color = "white", linewidth = 0.3, alpha = 0.8) +
+  geom_vline(xintercept = c(2, 4, 6),
+             linetype = "dashed", color = "#d73027", linewidth = 1) +
+  scale_x_continuous(breaks = seq(0, 10, 2), expand = c(0.01, 0)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  theme_minimal() +
+  labs(
+    title = "Distance Distribution",
+    subtitle = "Dashed lines show category thresholds",
+    x = "Distance to Nearest Hospital (km)",
+    y = "Number of Locations"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 9, hjust = 0.5, color = "gray40"),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 9),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+```
+
+```{r}
+if("randomForest" %in% (.packages())){
+  detach("package:randomForest", unload = TRUE)
+}
+
+p4 <- ggplot(access_dist, aes(x = Category, y = Percentage, fill = Category)) +
+  geom_bar(stat = "identity", color = "white", linewidth = 0.8, width = 0.8) +
+  scale_fill_manual(
+    values = c("#1a9850", "#91cf60", "#fee08b", "#fc8d59")
+  ) +
+  geom_text(aes(label = sprintf("%.1f%%\n(n=%d)", Percentage, Count)),
+            vjust = -0.3, size = 3.5, fontface = "bold", color = "gray20") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  theme_minimal() +
+  labs(
+    title = "Accessibility Summary",
+    x = NULL,
+    y = "Percentage of Area (%)"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    legend.position = "none",
+    axis.text.x = element_text(size = 8.5, angle = 0, hjust = 0.5),
+    axis.text.y = element_text(size = 9),
+    axis.title.y = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
+  ) +
+  scale_x_discrete(labels = c("Excellent\n<2km", "Good\n2-4km",
+                              "Moderate\n4-6km", "Poor\n6-8km"))
+
+```
+
+```{r}
+if("randomForest" %in% (.packages())){
+  detach("package:randomForest", unload = TRUE)
+}
+
+
+combined_plot <- (p1 | p2) / (p3 | p4) +
+  plot_layout(heights = c(2.2, 1)) +
+  plot_annotation(
+    title = 'Figure 8: Healthcare Accessibility Analysis - Compton, California',
+    subtitle = 'Network Analysis: Distance to Nearest Hospital Facility',
+    caption = 'Data: OpenStreetMap | Analysis: Straight-line distance | Scale bars show 3km | December 2025',
+    theme = theme(
+      plot.title = element_text(size = 18, face = "bold", hjust = 0.5, margin = margin(b = 5)),
+      plot.subtitle = element_text(size = 13, hjust = 0.5, color = "gray30", margin = margin(b = 10)),
+      plot.caption = element_text(size = 9, hjust = 0.5, color = "gray40", margin = margin(t = 10)),
+      plot.margin = margin(15, 15, 15, 15)
+    )
+  )
+
+print(combined_plot)
+```
+
+  I examined a different variable but one just as crucial like the first two: access to hospitals. Furthermore, I decided to zoom in on the neighborhood of Compton as it is historically under-served. So, for each randomly generated sample, of which there are 102, I calculated the straight-line distance from those points to the nearest hospital. Based on that calculated distance, I split the accessibility into four bins: Excellent, Good, Moderate, and Poor accessibility.
+
+According to the LA County Department of Public Health, 23% of adults, aged 18 or over, have difficulty accessing healthcare in Compton (2015). That's 17% percent more than the best performing community within LA County. This places Compton in the very last and worst performing category of public health on the California Healthy Places Index Score (2015).
+
+According to the Accessibility Summary, nearly 55% of points fall within the Good category of hospital accessibility. Broadly, this doesn't seem too bad, however, I also noticed an interesting trend within Compton in that it looks like coverage worsens as you move towards the south of the neighborhood. This could be due to southern adjacent neighborhoods also having poor access to hospitals.
+
+In conclusion, there is a lot of work to do regarding gentrification and making sure LA is an equitable place to live. Much of the analysis showed great disparities in wealth and vegetative distribution. However, by using the above spatial techniques like bivariate comparisons, interpolations, NDVI index analysis, and network analysis, policy makers can enact change whilst having the most advanced data to support them.
+
+
+Bibliography
+
+  Abercrombie, Lauren C., et al. “Income and Racial Disparities in Access to Public Parks and Private Recreation Facilities.” American Journal of Preventive Medicine, vol. 34, no. 1, Jan. 2008, pp. 9–15, https://doi.org/10.1016/j.amepre.2007.09.030.
+
+  Wachsmuth, David, and Alexander Weisler. “(PDF) Airbnb and the Rent Gap: Gentrification through the Sharing Economy.” ResearchGate, Feb. 2018, www.researchgate.net/publication/318281320_Airbnb_and_the_Rent_Gap_Gentrification_Through_the_Sharing_Economy.
+
+  Harrower, Mark, and Cynthia A. Brewer. “ColorBrewer.org: An Online Tool for Selecting Colour Schemes for Maps.” The Cartographic Journal, vol. 40, no. 1, June 2003, pp. 27–37, https://doi.org/10.1179/000870403235002042. Accessed 5 Dec. 2025.
+
+  Franco, Manuel J. Sánchez, and Maria Elena Aramendia Muneta. “Why Do Guests Stay at Airbnb versus Hotels? An Empirical Analysis of Necessary and Sufficient Conditions.” Journal of Innovation & Knowledge, vol. 8, no. 3, July 2023, p. 100380, www.sciencedirect.com/science/article/pii/S2444569X23000768.
+
+  Islam, Md Didarul, et al. “Airbnb Rental Price Modeling Based on Latent Dirichlet Allocation and MESF-XGBoost Composite Model.” Machine Learning with Applications, vol. 7, Mar. 2022, p. 100208, https://doi.org/10.1016/j.mlwa.2021.100208. Accessed 20 Dec. 2021.
+
+  Horn, Keren, and Mark Merante. “Is Home Sharing Driving up Rents? Evidence from Airbnb in Boston.” Journal of Housing Economics, vol. 38, Dec. 2017, pp. 14–24, https://doi.org/10.1016/j.jhe.2017.08.002.
+
+  Ewing, Reid, and Robert Cervero. “Travel and the Built Environment.” Journal of the American Planning Association, vol. 76, no. 3, 21 June 2010, pp. 265–294, eastportlandactionplan.org/sites/default/files/Ewing_Cervero_JAPA_2010_Travel+BE_MetaAnalysis.pdf, https://doi.org/10.1080/01944361003766766.
+
+  Pettorelli, Nathalie, et al. “(12) (PDF) the Normalized Difference Vegetation Index (NDVI): Unforeseen Successes in Animal Ecology.” ResearchGate, 2024, www.researchgate.net/publication/233408135_The_Normalized_Difference_Vegetation_Index_NDVI_Unforeseen_successes_in_animal_ecology.
+
+  Gandhi, G. Meera, et al. “Ndvi: Vegetation Change Detection Using Remote Sensing and Gis a Case Study of Vellore District.” Procedia Computer Science, vol. 57, 2015, pp. 1199–1210, https://doi.org/10.1016/j.procs.2015.07.415.
+
+  Nowak, David J., and Eric J. Greenfield. “Tree and Impervious Cover Change in U.S. Cities.” Urban Forestry & Urban Greening, vol. 11, no. 1, Jan. 2012, pp. 21–30, https://doi.org/10.1016/j.ufug.2011.11.005. Accessed 26 Nov. 2019.
+    
+  Wolch, Jennifer R., et al. “Urban Green Space, Public Health, and Environmental Justice: The Challenge of Making Cities “Just Green Enough.”” Landscape and Urban Planning, vol. 125, no. 125, May 2014, pp. 234–244, www.sciencedirect.com/science/article/abs/pii/S0169204614000310, https://doi.org/10.1016/j.landurbplan.2014.01.017.
+
+  Villeneuve, Paul J., et al. “A Cohort Study Relating Urban Green Space with Mortality in Ontario, Canada.” Environmental Research, vol. 115, no. 115, May 2012, pp. 51–58, https://doi.org/10.1016/j.envres.2012.03.003.
+
+  “Tree Equity Score.” American Forests, www.americanforests.org/tools-research-reports-and-guides/tree-equity-score/.
+
+  CITY and COMMUNITY HEALTH PROFILES LOS ANGELES COUNTY COMPTON. 2018.
+
+  Gibbs, Chris, et al. “Pricing in the Sharing Economy: A Hedonic Pricing Model Applied to Airbnb Listings.” Journal of Travel & Tourism Marketing, vol. 35, no. 1, 10 Apr. 2017, pp. 46–56, https://doi.org/10.1080/10548408.2017.1308292.
+
+# Appendix: R Code
+```{r appendix-code, ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE, class.source='fold-show'}
+```
+
